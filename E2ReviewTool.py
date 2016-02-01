@@ -167,7 +167,7 @@ def concatenateNewLOG(LOGs):
 
 def concatenateLOG(LOGs):
   originDtype = dtype([('EID','|S50'),('ver',int),('ot','|S50'),('lat',float),('lon',float),('depth',float),('mag',float),('nT',int),('nS',int),('Spercent',float),('alert',int),('alertime','|S50'),('first',int),('OK',int)])
-  triggerDtype = dtype([('EID','|S50'),('ver',int),('ID','|S50'),('net','|S50'),('sta','|S50'),('loc','|S50'),('chn','|S50'),('trigT','|S50'),('lat',float),('lon',float),('pdmag',float),('logpd',float),('pdSNR',float),('updm',int),('distkm',float),('azimuth',float),('TTErr',float)])
+  triggerDtype = dtype([('EID','|S50'),('ver',int),('ID','|S50'),('net','|S50'),('sta','|S50'),('loc','|S50'),('chn','|S50'),('trigT','|S50'),('lat',float),('lon',float),('pdmag',float),('logpd',float),('pdSNR',float),('updm',int),('tpmag',float),('logtp',float),('tpSNR',float),('utpm',int),('distkm',float),('azimuth',float),('TTErr',float)])
   origins = array([],originDtype)
   triggers = array([],triggerDtype)
   originsdict = {}
@@ -196,8 +196,10 @@ def concatenateLOG(LOGs):
               timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,rsmp,tsmp,log_taup,taup_snr,dsmp,log_pd,pd_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,tel,tsec,distkm,azimuth,tterr,plen,sps,toffset,arrtime,protime,fndtime,quetime,sndtime,e2time,buftime,alert = line.strip().split() # parse line
             if not int(Eid)>0: continue
             loc = loc.replace('--','')
+            if log_taup=='NA': log_taup=-9999
+            if taup_snr=='NA': taup_snr=-9999
             trigger_time= trigger_time.replace('/','-')
-            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,distkm,azimuth,tterr)],dtype=triggerDtype))
+            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,tpmag,log_taup,taup_snr,utpm,distkm,azimuth,tterr)],dtype=triggerDtype))
           if re.match(".+\|H: .+",line):
             timeStamp,Eid,ver,atimeTxt,otTxt,mag,foo,foo,foo,foo,lat,lon,foo,nT,nS,percnt,foo,foo,foo,oterr,foo,Ast = line.strip().split()
             origin = array([(Eid,ver,otTxt,lat,lon,8.0,mag,nT,nS,percnt,(Ast=='yes'),atimeTxt,0,15)],dtype=originDtype)
@@ -221,8 +223,10 @@ def concatenateLOG(LOGs):
             timeStamp,Eid,sta,net,chn,loc,lat,lon,trigger_time,log_taup,taup_snr,log_pd,pd_snr,log_pv,pv_snr,pa,pa_snr,assoc,tpmag,utpm,pdmag,updm,distkm = line.strip().split()
             ver = int(timeStamp.split('L')[1][:-1])
             loc = loc.replace('--','')
-            distkm,azimuth,tterr = 0,0,0
-            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,distkm,azimuth,tterr)],dtype=triggerDtype))
+            distkm,azimuth,tterr = -9999,-9999,-9999
+            if taup_snr=='NA': taup_snr=-9999
+            if log_taup=='NA': log_taup=-9999
+            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,tpmag,log_taup,taup_snr,utpm,distkm,azimuth,tterr)],dtype=triggerDtype))
     except Exception as E:
       sys.exit('Error in %s:\n%s\n in line:\n%s'%(f,str(E),line))
   origins.sort(order=['EID','ver'])
@@ -256,6 +260,7 @@ class CatalogEvent(QTreeWidgetItem):
     self.lon = float(lon)
     self.depth = float(depth)
     self.mag = float(mag)
+    self.typ =typ
     self.refID = refID
     self.origins = []
     self.preffered = None
@@ -328,8 +333,8 @@ class Origin(QTreeWidgetItem):
       self.setText(7,"%.2f"%self.Secs)
 
 class StationMagnitude(QTreeWidgetItem):
-  def __init__(self,EID,ver,ID,net,sta,loc,chn,tt,lat,lon,pdmag,logpd=0,pdsnr=0,updm=0,dist=0,azim=0,tterr=0):
-    QTreeWidgetItem.__init__(self,['-'.join([EID,str(ver)]),ID,str(tt),'%.3f'%lat,'%.3f'%lon,'%.1f'%dist,'%.2f'%tterr,'%.1f'%pdmag,['n','y'][updm],'%.2f'%logpd,'%.1f'%pdsnr,'%d'%azim])
+  def __init__(self,EID,ver,ID,net,sta,loc,chn,tt,lat,lon,pdmag,logpd=0,pdsnr=0,updm=0,tpmag=0,logtp=0,tpsnr=0,utpm=0,dist=0,azim=0,tterr=0):
+    QTreeWidgetItem.__init__(self,['-'.join([EID,str(ver)]),ID,str(tt),'%.3f'%lat,'%.3f'%lon,'%.1f'%dist,'%.2f'%tterr,'%.1f'%pdmag,['n','y'][updm],'%.2f'%logpd,'%.1f'%pdsnr,'%.1f'%tpmag,['n','y'][utpm],'%.2f'%logtp,'%.1f'%tpsnr,'%d'%azim])
     self.EID = EID
     self.ver = ver
     try:
@@ -343,6 +348,10 @@ class StationMagnitude(QTreeWidgetItem):
     self.pdsnr = float(pdsnr)
     self.pdmag = float(pdmag)
     self.updm = float(updm)
+    self.logtp = float(logtp)
+    self.tpsnr = float(tpsnr)
+    self.tpmag = float(tpmag)
+    self.utpm = float(utpm)
     self.dist = float(dist)
     self.azim = float(azim)
     self.tterr = float(tterr)
@@ -545,7 +554,7 @@ class AppForm(QMainWindow):
     self.blur = QGraphicsBlurEffect(self.canvas)
     self.canvas.setGraphicsEffect(self.blur)
     self.blur.setEnabled(False)
-    self.osm = osm(self.ax,OSMTILEURL) # add open street map generator
+    self.osm = osm(self.ax,OSMTILEURL,'tiles') # add open street map generator
     self.zoomIsrael()
     if args.i:
       if splash: splash.showMessage('Reading E2 log file(s)...',Qt.AlignCenter)
@@ -840,10 +849,10 @@ class AppForm(QMainWindow):
     'create the triggers list widget'
     self.triggerWidget = QTreeWidget()
     self.triggerWidget.setAlternatingRowColors(True)
-    self.triggerWidget.setColumnCount(11)
+    self.triggerWidget.setColumnCount(16)
     self.triggerWidget.setSortingEnabled(True)
     self.triggerWidget.setMouseTracking(True)
-    header = ['EvID','StaID','Trigger-Time','Latitude','Longitude','DistKm','TTErr','Mag (Pd)','Used','LogPd','SNR','Azimuth']
+    header = ['EvID','StaID','Trigger-Time','Latitude','Longitude','DistKm','TTErr','Mag (Pd)','Used','LogPd','PdSNR','Mag (tauP)','Used','LogTauP','TaupSNR','Azimuth']
     self.triggerWidget.setHeaderLabels(header)
     self.triggerWidget.sortItems(2,0)
     self.treeSplitter.addWidget(self.triggerWidget)
@@ -1090,22 +1099,22 @@ class AppForm(QMainWindow):
       FILTER=False # don't filter default
       ev = self.eventWidget.topLevelItem(i) # get an event from the list
       event = ev # generate a reference
-      if not ev.lat or not ev.lon: # if its an unassociated event 
+      if not ev.lat or not ev.lon: # if its an unassociated event
         event = ev.preffered # get its prefered origin as reference
       if not (self.minmag <= event.mag <= self.maxmag \
               and UTCDateTime(self.starttime) <= event.ot <= UTCDateTime(self.endtime) \
               and self.bbox[0] <= event.lon <=self.bbox[1] \
-              and self.bbox[2] <= event.lat <= self.bbox[3]): 
+              and self.bbox[2] <= event.lat <= self.bbox[3]):
         FILTER=True # filter if the reference is out of limits
       try:
         if FILTER and (self.minmag <= event.preffered.mag <= self.maxmag \
               and UTCDateTime(self.starttime) <= event.preffered.ot <= UTCDateTime(self.endtime) \
               and self.bbox[0] <= event.preffered.lon <=self.bbox[1] \
-              and self.bbox[2] <= event.preffered.lat <= self.bbox[3]): 
+              and self.bbox[2] <= event.preffered.lat <= self.bbox[3]):
           FILTER=False # don't filter if the reference preffered origin is within limits
       except: # we are already looking at an un associated origin
-        pass    
-      if FILTER:        
+        pass
+      if FILTER:
         ev.setHidden(True)
         if ev.l in self.ax.lines: self.ax.lines.remove(ev.l)
         try:
@@ -1119,8 +1128,8 @@ class AppForm(QMainWindow):
           if not ev.preffered.l in self.ax.lines: self.ax.add_line(ev.preffered.l)
         except:
           pass
-          
-  def filterBlasts(self):         
+
+  def filterBlasts(self):
     for i in xrange(self.eventWidget.topLevelItemCount()):
       event = self.eventWidget.topLevelItem(i)
       if int(event.text(12))==2:
@@ -1132,7 +1141,7 @@ class AppForm(QMainWindow):
           pass
     self.updateSummary()
     self.updateHistPlot()
-    self.draw()               
+    self.draw()
 
   def deletEvents(self,item):
     item.setHidden(True)
@@ -1171,11 +1180,11 @@ class AppForm(QMainWindow):
         origin = [origin for origin in self._origins[refID] if origin['first']] # get the first reported origin
         if not len(origin)>0: # if non was reported...
           if self.reportedOnly: continue # if we use only reported events skip this one
-          origin = [orig for orig in self._origins[refID] if orig['OK']==7] # get all origins that didn't alert due to low magnitude 
+          origin = [orig for orig in self._origins[refID] if orig['OK']==7] # get all origins that didn't alert due to low magnitude
           if not len(origin)>0: # if no origin is available...
             continue
         origin = origin[0] # convert list to object
-        origin['first']=1 # set as first   
+        origin['first']=1 # set as first
         # chack distance and time
         if geo.inv(origin['lon'],origin['lat'],event['lon'],event['lat'])[-1]/1000.>self.deltaR \
            or abs(UTCDateTime(origin['ot'])-UTCDateTime(event['ot']))>self.deltaT: continue
@@ -1199,7 +1208,7 @@ class AppForm(QMainWindow):
           if self._fixdist:
             dist=geo.inv(trigger.lon,trigger.lat,event.lon,event.lat)[-1]/1000.
           else:
-            dist=trigger.dist    
+            dist=trigger.dist
           if self._fixmags:
             trigger.pdmag = Sadehpdmag(trigger.logpd,dist)
           else:
@@ -1520,10 +1529,10 @@ class AppForm(QMainWindow):
   def updateFixMags(self):
     self._fixmags = bool(self.fixmagsCheck.checkState())
     self.refreshbuttonHilight.setStrength(1)
-    
+
   def updateFixDist(self):
     self._fixdist = bool(self.fixdistCheck.checkState())
-    self.refreshbuttonHilight.setStrength(1)    
+    self.refreshbuttonHilight.setStrength(1)
 
   def updateReportedOnly(self):
     self.reportedOnly = bool(self.reportedOnlyCheck.checkState())
@@ -1603,7 +1612,7 @@ class AppForm(QMainWindow):
     self.fixdistCheck.setChecked(self._fixdist)
     self.fixdistCheck.setToolTip('Use real distance to re-estimate magnitudes')
     l.addWidget(self.fixdistCheck,1,0)
-    self.tb.addWidget(w)    
+    self.tb.addWidget(w)
     w = QWidget()
     w.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed)
     self.reportedOnlyCheck = QCheckBox('Reported Only')
@@ -1750,14 +1759,14 @@ else:
 
 import glob
 app = QApplication([])
-ifiles = glob.glob('/media/sf_work_napa2/GIIE2LOGS/E2_20150[567]*.log')
-rfiles = '/media/sf_work_napa2/GII_EQ_20150416_20150730.csv'
-args = parser.parse_args(['-i']+ifiles+['-r',rfiles])
+ifiles = ifiles = glob.glob('/work/work/GIIE2LOGS/E2_20150[567]*.log')+['/work/work/E2r_20151029_201201-201504.log']
+rfiles = ['/work/work/GII_EQ_20150416_20150801.csv','/work/work/GII_EQ_201201-201504.csv']
+args = parser.parse_args(['-i']+ifiles+['-r']+rfiles)
 self = AppForm(None,args)
 self.show()
 
 
-  
+
   '''
 
 
