@@ -20,7 +20,6 @@
 
 import argparse,sys,os,re,math,time
 import matplotlib as mpl
-from obspy.core.event_header import OriginType
 mpl.use('QT4Agg')
 from obspy import UTCDateTime
 from PyQt4.QtCore import *
