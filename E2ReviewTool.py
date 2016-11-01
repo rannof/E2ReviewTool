@@ -58,7 +58,7 @@ parser.add_argument('-b',metavar='bounds',nargs=4,help='Region bounding box (wes
 FONTSIZE=8
 VERBOSE=False # printout message
 GRIDON=False # grid on or off [True | False]
-OSMTILEURL="http://otile1.mqcdn.com/tiles/1.0.0/osm" # where to read map tiles from
+OSMTILEURL="http://a.tile.openstreetmap.org" # where to read map tiles from
 
 ##################### Some matplotlib Black Magic ##########################################################
 ## This part will redirect some matplotlib toolbar and canvas callbacks
