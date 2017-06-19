@@ -58,7 +58,10 @@ parser.add_argument('-b',metavar='bounds',nargs=4,help='Region bounding box (wes
 FONTSIZE=8
 VERBOSE=False # printout message
 GRIDON=False # grid on or off [True | False]
-OSMTILEURL="http://a.tile.openstreetmap.org" # where to read map tiles from
+OSMTILEURL="http://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/" # where to read map tiles from
+OSMTILEARCHIVE='tiles1' # where to save downloaded tiles
+OSMTILEPAT = "{Z}/{Y}/{X}.png"
+TILEARCHIVE='../ElViS/tiles' # local map tiles
 
 ##################### Some matplotlib Black Magic ##########################################################
 ## This part will redirect some matplotlib toolbar and canvas callbacks
@@ -553,7 +556,7 @@ class AppForm(QMainWindow):
     self.blur = QGraphicsBlurEffect(self.canvas)
     self.canvas.setGraphicsEffect(self.blur)
     self.blur.setEnabled(False)
-    self.osm = osm(self.ax,OSMTILEURL,'tiles') # add open street map generator
+    self.osm = osm(self.ax,OSMTILEURL,OSMTILEPAT,OSMTILEARCHIVE) # add open street map generator
     self.zoomIsrael()
     if args.i:
       if splash: splash.showMessage('Reading E2 log file(s)...',Qt.AlignCenter)
@@ -961,6 +964,38 @@ class AppForm(QMainWindow):
     self.infoWidget.addTab(self.magerrWidget,'Mag Error')
     self.create_locerr_widget()
     self.infoWidget.addTab(self.locerrWidget,'Loc Error')
+
+  def save_preffered_triggeres(self):
+    'Save parameters of event and triggers'
+    data = [['cEID','cOT','cMAG','cLON','cLAT',
+             'oEID','oOT','oMAG','oLON','oLAT',
+             'tID','tT','tLON','tLAT','logpd','pdmag','logtp','dist']]
+    for i in xrange(self.eventWidget.topLevelItemCount()):
+      ev = self.eventWidget.topLevelItem(i)
+      if ev.isHidden(): continue # skip hidden
+      if ev.preffered: 
+        origin = ev.preffered # get preffered origin
+      else:
+        continue # don't waste time on no preffered events
+      for trig in origin.triggers:
+        data += [[ev.EID,str(ev.ot),str(ev.mag),str(ev.lon),str(ev.lat),
+             origin.EID,str(origin.ot),str(origin.mag),str(origin.lon),str(origin.lat),
+             trig.ID,str(trig.tt),str(trig.lon),str(trig.lat),str(trig.logpd),str(trig.pdmag),str(trig.logtp),str(trig.dist)]]
+    fileurl = str(QFileDialog.getSaveFileName(self, 'Save Table Data',
+                                                filter='CSV Files (*.csv);;Space Separated Files (*.txt);;All Files (*.*)')) # get the file name
+    if not fileurl: return
+    if fileurl.endswith('txt'):
+      sep = ' '
+    else:
+      sep = ','
+    try:
+      with open(fileurl,'w') as f:
+        for d in data:
+          f.write(sep.join(d)+'\n')
+    except:
+      self.message('Saving data to %s failed'%fileurl)
+      return
+    self.statusBar().showMessage('Saved %d events to %s'%(len(data),fileurl), 2000)
 
   def get_input_file(self,filesurl=None,update=1):
     'open a dialog to get a file name'
@@ -1809,11 +1844,41 @@ for EID in edict:
 '''
 
 
+def pdtp(logpds,logtps):
+  return log10(mean([10**i for i in logpds])),log10(mean([10**i for i in logtps]))
 
+def on_point_Pick(event):
+  try:
+    event.canvas.toolbar.set_message(event.artist.get_label())
+  except Exception as E:
+    print str(E)
 
-
-
-
+'''
+fig = figure()
+ax = gca()
+fig.canvas.mpl_connect('pick_event',on_point_Pick)
+for i in xrange(self.eventWidget.topLevelItemCount()):
+  item = self.eventWidget.topLevelItem(i)
+  if not item.preffered: continue
+  origin = item.preffered
+#  for tr in origin.triggers:
+#    if tr.updm and 'PRNI' in tr.ID:
+#      tr.logpd=log10(10**tr.logpd)/2.)
+  if not any([tr.dist<=100 for tr in origin.triggers]): continue
+  logpds = array([tr.logpd for tr in origin.triggers if tr.updm and not 'MBRI' in tr.ID and not 'DAM2' in tr.ID])
+  pdsnrs = array([tr.pdsnr for tr in origin.triggers if tr.updm and not 'MBRI' in tr.ID and not 'DAM2' in tr.ID])
+  logtps = array([tr.logtp for tr in origin.triggers if tr.utpm])
+  tpsnrs = array([tr.tpsnr for tr in origin.triggers if tr.utpm])
+  logpd = log10((10**logpds*pdsnrs).sum()/pdsnrs.sum())
+  logtp = log10((10**logtps*tpsnrs).sum()/tpsnrs.sum())
+  if sum(pdsnrs>100)<1:
+    plot(logtp,logpd,'.',c=['b','r','r','b','k'][origin.event.typ],label=origin.EID,picker=5,alpha=0.2)
+  else:
+    plot(logtp,logpd,'.',c=['b','r','r','b','k'][origin.event.typ],label=origin.EID,picker=5)
+x=arange(-1,1,0.2)
+plot(x,-3.728+x*2.817,'k--')
+fig.canvas.mpl_connect('pick_event',on_point_Pick)
+'''
 
 
 
