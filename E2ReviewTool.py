@@ -59,7 +59,7 @@ FONTSIZE=8
 VERBOSE=False # printout message
 GRIDON=False # grid on or off [True | False]
 OSMTILEURL="http://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/" # where to read map tiles from
-OSMTILEARCHIVE='tiles1' # where to save downloaded tiles
+OSMTILEARCHIVE='maps' # where to save downloaded tiles
 OSMTILEPAT = "{Z}/{Y}/{X}.png"
 TILEARCHIVE='../ElViS/tiles' # local map tiles
 
@@ -143,9 +143,9 @@ def concatenateNewLOG(LOGs):
         for line in log:
           if re.match(".+E:I:[ F].+",line):
             try: # for older logs than July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,Tok,Aok,Ast,atimeTxt = line.strip().split()
+              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,TF,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
             except ValueError: # for logs since July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
+              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,TF,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
             if not int(Eid)>0: continue
             origin = array([(Eid,ver,otTxt,lat,lon,depth,mag,nT,nS,percnt,Ast,atimeTxt,0)],dtype=originDtype)
             if re.match(".+E:I:F.+",line): origin['first'] = 1
@@ -184,7 +184,7 @@ def concatenateLOG(LOGs):
             try:# for older logs than July 22, 2015
               timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,Tok,Aok,Ast,atimeTxt = line.strip().split()
             except ValueError: # for logs since July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
+              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,TF,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
             if not int(Eid)>0: continue
             OK = int(Mok)<<3 | int(nSok)<<2 | int(Lok)<<1 | int(Tok)
             origin = array([(Eid,ver,otTxt,lat,lon,depth,mag,nT,nS,percnt,Ast,atimeTxt,0,OK)],dtype=originDtype)
@@ -192,10 +192,10 @@ def concatenateLOG(LOGs):
             origins = append(origins,origin)
           if re.match(".+E:I:T: .+",line):
             try: # for older logs than July 22, 2015
-              timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,log_taup,taup_snr,log_pd,pd_snr,log_pv,pv_snr,pa,pa_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,distkm,azimuth,tterr = line.strip().split()[:34]# parse line
+              timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,rsmp,tsmp,log_taup,taup_snr,dsmp,log_pd,pd_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,tel,tsec,distkm,azimuth,TF,tterr = line.strip().split()[:36]# parse line
               if not '.' in log_taup: raise ValueError
             except ValueError: # for logs since July 22, 2015
-              timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,rsmp,tsmp,log_taup,taup_snr,dsmp,log_pd,pd_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,tel,tsec,distkm,azimuth,tterr,plen,sps,toffset,arrtime,protime,fndtime,quetime,sndtime,e2time,buftime,alert = line.strip().split() # parse line
+              timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,rsmp,tsmp,log_taup,taup_snr,dsmp,log_pd,pd_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,tel,tsec,distkm,azimuth,TF,tterr,azerror,incid,plen,sps,toffset,arrtime,protime,fndtime,quetime,sndtime,e2time,buftime,alert,zc,ne_to_z,acc_range = line.strip().split() # parse line
             if not int(Eid)>0: continue
             loc = loc.replace('--','')
             if log_taup=='NA': log_taup=-9999
