@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # by Ran Novitsky Nof (ran.nof@gmail.com), 2015 @ BSL
 
 # ***********************************************************************************
@@ -20,22 +20,41 @@
 
 import argparse,sys,os,re,math,time
 import matplotlib as mpl
-mpl.use('QT4Agg')
+try:
+  mpl.use('QT5Agg')
+except ImportError:
+  mpl.use('QT4agg')
 from obspy import UTCDateTime
-from PyQt4.QtCore import *
-from PyQt4.QtGui import *
-from PyQt4 import uic
+try:
+  from PyQt5.QtCore import *
+  from PyQt5.QtGui import *
+  from PyQt5.QtWidgets import *
+except ImportError:
+  from PyQt4.QtCore import *
+  from PyQt4.QtGui import *
 from matplotlib.backend_bases import NavigationToolbar2, Event
 from matplotlib.backends.backend_qt4agg import(
     FigureCanvasQTAgg as FigureCanvas,
     NavigationToolbar2QT as NavigationToolbar)
 from matplotlib.figure import Figure
 from matplotlib import cm
-from numpy import array,dtype,int,str,float,loadtxt,append,log10,where
+import numpy as np
+#from numpy import array,dtype,int,str,float,loadtxt,append,log10,where
 import pyproj
 geo = pyproj.Geod(ellps='WGS84')
 # util class for Open Street Map
 from osm import OSM as osm
+import pandas as pd
+import logging
+
+_LOG_LEVEL_STRINGS = ['CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
+logging.basicConfig(format='%(asctime)s.%(msecs)03d | %(name)s | %(levelname)s | %(message)s',
+                    datefmt='%Y-%m%dT%H:%M:%S')
+formatter = logging.Formatter(fmt='%(asctime)s.%(msecs)03d | %(name)s | %(levelname)s | %(message)s',
+                              datefmt='%Y-%m-%dT%H:%M:%S')
+
+log = logging.getLogger('E2ReviewTool')
+log.setLevel('DEBUG')
 
 parser = argparse.ArgumentParser(
          formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -43,15 +62,14 @@ parser = argparse.ArgumentParser(
          epilog='''Created by Ran Novitsky Nof (ran.nof@gmail.com), 2015 @ BSL''')
 parser.add_argument('-i',metavar='file',nargs='+',help='input E2 log file(s)',type=str)
 parser.add_argument('-r',metavar='file',nargs='+',help='''input reference csv file
-csv - comma separated value in GII DB format [epiid,ml,typ,lat,lon,abs_ot_d,abs_ot_t,refDI].
-epiid: Event Catalog ID
-ml: Local Magnitude
+csv - comma separated value in GII DB format [eventid mag typ lat lon depth ot].
+eventid: Event Catalog ID
+mag: Local Magnitude
 typ: Event type code
 lat: Latitude
 lon: Longitude
-abs_ot_d: Origin time Date
-abs_ot_t: Origin time time
-refDI: E2 reference ID (or None)
+depth: Depth
+ot: Origin time
  ''',type=str)
 parser.add_argument('-b',metavar='bounds',nargs=4,help='Region bounding box (west east south north)',type=float,default=(-180.0,180.0,-90,90))
 
@@ -112,212 +130,154 @@ NavigationToolbar2.release_zoom = new_release_zoom
 
 def E2pdmag(logpd,distkm):
   'Calculate magnitude as in ElarmS (Kuyuk and Allen, 2013)'
-  return 5.39+1.23*logpd+1.38*log10(distkm)
+  return 5.39+1.23*logpd+1.38*np.log10(distkm)
 
 def Sadehpdmag(logpd,distkm):
   'Calculate magnitude as in Sadeh, Ziv, Wust-Bloch, 2014 GJI'
-  return 5.7935+(logpd+log10(distkm))/1.041
+  return 5.7935+(logpd+np.log10(distkm))/1.041
+
+# ElarmS3 event headers. might need update for specific version or ElarmS.
+EVENTHEADERLINE = 'CSV eventid mag typ lat lon depth ot RefID VerID locERR otERR'
+EVENTHEADERTYPE = ['U','f8','U','f8','f8','f8','U','U','i4','f8','f8']
+# ElarmS3 log headers. might need update for specific version or ElarmS.
+LOGEVENTHEADERLINE = 'E:I:H: eventid ver evlat evlon dep mag time latu lonu depu magu timeu lk nTb nSb nT nS ave rms fitok splitok near statrig active inact nsta percnt prcntok mindist maxdist distok azspan Mok nSok Lok Tdif tpave pdave TF Tok Azok Aok Ast alert_time first'  # see H:I:H header in E2 log files + column "first" to indicate first alert or first solution
+LOGEVENTHEADERTYPE = ['U','i4','f8','f8','f8','f8','U','f8','f8','f8','f8','f8','f8','i4','i4','i4','i4','f8','f8','i4','i4','i4','i4','i4','i4','i4','f8','i4','f8','f8','i4','f8','i4','i4','i4','f8','f8','f8','i4','i4','i4','i4','i4','U','i4']
+LOGTRIGGERHEADERLINE = 'E:I:T:H: eventid ver update order sta chan net loc lat lon trigger_time rsmp tsmp log_taup taup_snr dsmp log_pd pd_snr assoc tpmag utpm pdmag updm uch ukm upd ups utp uts tel tsec distkm azimuth TF tterr azerror incid plen sps toffset arrtime protime fndtime quetime sndtime e2time buftime alert zc ne_to_z acc_range'
+LOGTRIGGERHEADERTYPE = ['U','i4','i4','i4','U','U','U','U','f8','f8','U','i4','i4','f8','f8','i4','f8','f8','U','f8','i4','f8','i4','i4','i4','i4','i4','i4','i4','i4','f8','f8','f8','i4','f8','f8','f8','i4','f8','f8','f8','f8','f8','f8','f8','f8','f8','f8','i4','f8','f8']
+
+logeventdtype = np.dtype(list(zip(LOGEVENTHEADERLINE.split()[1:], LOGEVENTHEADERTYPE)))
+logtriggerdtype = np.dtype(list(zip(LOGTRIGGERHEADERLINE.split()[1:], LOGTRIGGERHEADERTYPE)))
 
 def concatenateCSV(CSVs):
-  giidbtype = dtype([('epiid','|S50'),('ml',float),('typ',int),('lat',float),('lon',float),('abs_ot_d','|S50'),('abs_ot_t','|S50')])
-  rettype = dtype([('EID','|S50'),('ot','|S50'),('lat',float),('lon',float),('depth',float),('mag',float),('refID','|S50'),('type',int)])
-  ret = array([],dtype=rettype)
+  events = pd.DataFrame(columns=EVENTHEADERLINE.split()[1:])  # events table
   for f in CSVs:
     try:
-      fdata = loadtxt(f,delimiter=',',dtype=giidbtype,skiprows=1)
-    except ValueError:
-      raise ValueError('%s is not a valid scv file'%(f))
-    ret = append(ret,array([(v[0],'T'.join([v[5],v[6]])+'Z',v[3],v[4],10.0,v[1],None,v[2]) for v in fdata],dtype=ret.dtype))
-  return dict(zip(ret['EID'],ret))
-
-def concatenateNewLOG(LOGs):
-  originDtype = dtype([('EID','|S50'),('ver',int),('ot','|S50'),('lat',float),('lon',float),('depth',float),('mag',float),('nT',int),('nS',int),('Spercent',float),('alert',int),('alertime','|S50'),('first',int)])
-  triggerDtype = dtype([('EID','|S50'),('ver',int),('ID','|S50'),('net','|S50'),('sta','|S50'),('loc','|S50'),('chn','|S50'),('trigT','|S50'),('lat',float),('lon',float),('pdmag',float),('logpd',float),('pdSNR',float),('updm',int),('distkm',float),('azimuth',float),('TTErr',float)])
-  origins = array([],originDtype)
-  triggers = array([],triggerDtype)
-  originsdict = {}
-  triggerdict = {}
-  for f in LOGs:
+      data = pd.read_csv(f)
+      if np.any([k not in events.keys() for k in data.keys()]):
+        raise ValueError('CSV type is not compatible. Header should be: eventid mag typ lat lon depth ot. See docs for more info.')
+    except Exception as EX:
+      log.warning(EX)
+      continue
     try:
-      with open(f,'r') as log:
-        for line in log:
-          if re.match(".+E:I:[ F].+",line):
-            try: # for older logs than July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,TF,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
-            except ValueError: # for logs since July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,TF,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
-            if not int(Eid)>0: continue
-            origin = array([(Eid,ver,otTxt,lat,lon,depth,mag,nT,nS,percnt,Ast,atimeTxt,0)],dtype=originDtype)
-            if re.match(".+E:I:F.+",line): origin['first'] = 1
-            origins = append(origins,origin)
-          if re.match(".+E:I:T: .+",line):
-            timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,log_taup,taup_snr,log_pd,pd_snr,log_pv,pv_snr,pa,pa_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,distkm,azimuth,tterr = line.strip().split()[:34]# parse line
-            if not int(Eid)>0: continue
-            loc = loc.replace('--','')
-            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,distkm,azimuth,tterr)],dtype=triggerDtype))
-    except Exception as E:
-      sys.exit('Error in %s:\n%s\n in line:\n%s'%(f,str(E),line))
-  origins.sort(order=['EID','ver'])
-  for origin in origins:
-    if not origin['EID'] in originsdict: originsdict[origin['EID']] = []
-    originsdict[origin['EID']].append(origin)
-  for trigger in triggers:
-    ID = '-'.join([trigger['EID'],str(trigger['ver'])])
-    if not ID in triggerdict: triggerdict[ID]=[]
-    triggerdict[ID].append(trigger)
-  return originsdict,triggerdict
+      for k,v in (zip(EVENTHEADERLINE.split()[1:], EVENTHEADERTYPE)):
+        if k in data: data[k] = data[k].astype(v)
+    except Exception as EX:
+      log.warning(EX)
+      continue
+    events = events.append(data,ignore_index=True,sort=False)
+  #events.replace(np.nan,'',inplace=True)
+  return events
+
 
 def concatenateLOG(LOGs):
-  originDtype = dtype([('EID','|S50'),('ver',int),('ot','|S50'),('lat',float),('lon',float),('depth',float),('mag',float),('nT',int),('nS',int),('Spercent',float),('alert',int),('alertime','|S50'),('first',int),('OK',int)])
-  triggerDtype = dtype([('EID','|S50'),('ver',int),('ID','|S50'),('net','|S50'),('sta','|S50'),('loc','|S50'),('chn','|S50'),('trigT','|S50'),('lat',float),('lon',float),('pdmag',float),('logpd',float),('pdSNR',float),('updm',int),('tpmag',float),('logtp',float),('tpSNR',float),('utpm',int),('distkm',float),('azimuth',float),('TTErr',float)])
-  origins = array([],originDtype)
-  triggers = array([],triggerDtype)
-  originsdict = {}
-  triggerdict = {}
-  line = '--- None ---'
+  """ Parse log entries for event message"""
+  origins = pd.DataFrame(columns=LOGEVENTHEADERLINE.split()[1:])  # origins table
+  triggers = pd.DataFrame(columns=LOGTRIGGERHEADERLINE.split()[1:])  # triggers table
   for f in LOGs:
     try:
-      with open(f,'r') as log:
-        for line in log:
-          line = re.sub('(....)\/(..)\/(..) (..:)','\\1-\\2-\\3T\\4',line)# adjust time stamps
-          if re.match(".+E:I:[ F].+",line):
-            try:# for older logs than July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,Tok,Aok,Ast,atimeTxt = line.strip().split()
-            except ValueError: # for logs since July 22, 2015
-              timeStamp,Eid,ver,lat,lon,depth,mag,otTxt,latu,lonu,depu,magu,timeu,lk,nTb,nSb,nT,nS,ave,rms,fitok,splitok,near,statrig,active,inact,nsta,percnt,prcntok,mindist,maxdist,distok,azspan,Mok,nSok,Lok,Tdif,tpave,pdave,TF,Tok,Azok,Aok,Ast,atimeTxt = line.strip().split()
-            if not int(Eid)>0: continue
-            OK = int(Mok)<<3 | int(nSok)<<2 | int(Lok)<<1 | int(Tok)
-            origin = array([(Eid,ver,otTxt,lat,lon,depth,mag,nT,nS,percnt,Ast,atimeTxt,0,OK)],dtype=originDtype)
-            if re.match(".+E:I:F.+",line): origin['first'] = 1
-            origins = append(origins,origin)
-          if re.match(".+E:I:T: .+",line):
-            try: # for older logs than July 22, 2015
-              timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,rsmp,tsmp,log_taup,taup_snr,dsmp,log_pd,pd_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,tel,tsec,distkm,azimuth,TF,tterr = line.strip().split()[:36]# parse line
-              if not '.' in log_taup: raise ValueError
-            except ValueError: # for logs since July 22, 2015
-              timeStamp,Eid,ver,update,order,sta,chn,net,loc,lat,lon,trigger_time,rsmp,tsmp,log_taup,taup_snr,dsmp,log_pd,pd_snr,assoc,tpmag,utpm,pdmag,updm,uch,ukm,upd,ups,utp,uts,tel,tsec,distkm,azimuth,TF,tterr,azerror,incid,plen,sps,toffset,arrtime,protime,fndtime,quetime,sndtime,e2time,buftime,alert,zc,ne_to_z,acc_range = line.strip().split() # parse line
-            if not int(Eid)>0: continue
-            loc = loc.replace('--','')
-            if log_taup=='NA': log_taup=-9999
-            if taup_snr=='NA': taup_snr=-9999
-            trigger_time= trigger_time.replace('/','-')
-            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,tpmag,log_taup,taup_snr,utpm,distkm,azimuth,tterr)],dtype=triggerDtype))
-          if re.match(".+\|H: .+",line):
-            timeStamp,Eid,ver,atimeTxt,otTxt,mag,foo,foo,foo,foo,lat,lon,foo,nT,nS,percnt,foo,foo,foo,oterr,foo,Ast = line.strip().split()
-            origin = array([(Eid,ver,otTxt,lat,lon,8.0,mag,nT,nS,percnt,(Ast=='yes'),atimeTxt,0,15)],dtype=originDtype)
-            if not len(origins['first'][where(origins['EID']==Eid)])>0 and origin['alert']: origin['first'] = 1
-            origins = append(origins,origin)
-            if int(ver)>0:
-              trigUpdate = triggers[where(triggers['EID']==Eid)]
-              trigUpdate = trigUpdate[where(trigUpdate['ver']==int(ver)-1)]
-              for trigup in trigUpdate:
-                trig = trigup.copy()
-                trig['ver']=int(ver)
-                triggers = append(triggers,trig)
-            # update distance,azimuth
-            indx  =  where(triggers['EID']==Eid)[0]
-            indx = indx[where(triggers[indx]['ver']==int(ver))]
-            for i in indx:
-              azimuth,dist = geo.inv(float(lon),float(lat),triggers[i]['lon'],triggers[i]['lat'])[-2:]
-              triggers[i]['distkm'] = dist/1000.0
-              triggers[i]['azimuth'] = azimuth
-          if re.match(".+\|L[0-9]+: .+",line):
-            timeStamp,Eid,sta,net,chn,loc,lat,lon,trigger_time,log_taup,taup_snr,log_pd,pd_snr,log_pv,pv_snr,pa,pa_snr,assoc,tpmag,utpm,pdmag,updm,distkm = line.strip().split()
-            ver = int(timeStamp.split('L')[1][:-1])
-            loc = loc.replace('--','')
-            distkm,azimuth,tterr = -9999,-9999,-9999
-            if taup_snr=='NA': taup_snr=-9999
-            if log_taup=='NA': log_taup=-9999
-            triggers = append(triggers,array([(Eid,ver,'.'.join([net,sta,loc,chn]),net,sta,loc,chn,trigger_time,lat,lon,pdmag,log_pd,pd_snr,updm,tpmag,log_taup,taup_snr,utpm,distkm,azimuth,tterr)],dtype=triggerDtype))
-    except Exception as E:
-      sys.exit('Error in %s:\n%s\n in line:\n%s'%(f,str(E),line))
-  origins.sort(order=['EID','ver'])
-  for origin in origins:
-    if not origin['EID'] in originsdict: originsdict[origin['EID']] = []
-    originsdict[origin['EID']].append(origin)
-  for trigger in triggers:
-    ID = '-'.join([trigger['EID'],str(trigger['ver'])])
-    if not ID in triggerdict: triggerdict[ID]=[]
-    triggerdict[ID].append(trigger)
-  return originsdict,triggerdict
+      with open(f,'r') as logfile:
+        for line in logfile:
+          if re.search('.+E:I:[ F][ :]\s+\w', line):  # An event entry
+            values = line.split()[1:]
+            origins.loc[origins.shape[0],:-1] = values
+          elif re.search('.+E:I:T:\s+\w', line):  # A trigger entry
+            values = line.split()[1:]
+            triggers.loc[triggers.shape[0]] = values
+    except Exception as EX:
+      log.warning('{}\n{}'.format(line,EX))
+  origins['first'].replace(np.nan,0,inplace=True)
+  triggers['loc'].replace('--','',inplace=True)  # fix stations location
+  try:
+    for k,v in (zip(LOGEVENTHEADERLINE.split()[1:], LOGEVENTHEADERTYPE)):
+      origins[k] = origins[k].astype(v)
+    for k,v in (zip(LOGTRIGGERHEADERLINE.split()[1:], LOGTRIGGERHEADERTYPE)):
+      triggers[k] = triggers[k].astype(v)
+  except ValueError as EX:
+    log.warning('{},{}\n{}'.format(k,v,EX))
+    sys.exit(1)
+  # flag first alerts
+  for refID in origins.eventid.unique():
+    origin = origins[(origins.eventid == refID) & (origins.Ast == 1)]  # get the first reported origin
+    if not origin.shape[0]: # if non was reported...
+      origin = origins[(origins.eventid == refID) & (origins[['fitok', 'splitok', 'prcntok', 'distok', 'nSok', 'Lok', 'Tok', 'Azok']].all(axis=1))] # get all origins that didn't alert due to low magnitude
+      if not origin.shape[0]: # if no origin is available...
+        continue
+    origin = origin.iloc[0]  # convert list to object
+    origins.loc[origin.name,'first']=1
+  return origins, triggers
 
 
 class CatalogEvent(QTreeWidgetItem):
-  def __init__(self,EID='',ot='',lat=0,lon=0,depth=0,mag=0,refID='',typ=-1):
-    QTreeWidgetItem.__init__(self,[EID,str(ot),'%.1f'%mag,'%.3f'%lat,'%.3f'%lon]+['']*6+[refID,'%d'%typ])
-    self.EID = EID
-    if not ot: ot=0
-    if not lat:
-      lat=0
-      self.setText(3,'')
-    if not lon:
-      lon=0
-      self.setText(4,'')
-    if not depth: depth=0
-    if not mag:
-      mag=0
-      self.setText(2,'')
-    self.ot = UTCDateTime(ot)
-    self.lat = float(lat)
-    self.lon = float(lon)
-    self.depth = float(depth)
-    self.mag = float(mag)
-    self.typ =typ
-    self.refID = refID
+  def __init__(self,row):
+    """
+
+    :param row: = A pandas series. See EVENTHEADERLINE for keys. eventid mag typ lat lon depth ot RefID VerID
+    """
+    if type(row) is not pd.core.series.Series:
+      eventid = row
+      data = pd.DataFrame(columns=EVENTHEADERLINE.split()[1:])  # events table
+      data.loc[0,'eventid'] = 'False'
+      data.loc[0,'RefID'] = ''
+      data.loc[0,'RefVer'] = ''
+      row = data.loc[0]
+    r = row.astype(str).replace('nan','')
+    if r['RefID'] == '':
+      r['RefID'] = 'Missed'
+    # header: ['EvID','Origin-Time','Mag','Latitude','Longitude','Origin-Time','Mag','Latitude','Longitude','Loc Err','OT Err','RefID','Event Type']
+    QTreeWidgetItem.__init__(self,[r.eventid,r.ot,r.mag,r.lat,r.lon,'','','','',r.locERR,r.otERR,'-'.join([r.RefID,r.VerID]),r.typ])
+    self.data = row
+    try:
+        self.ot = UTCDateTime(r.ot)
+    except (ValueError, TypeError):
+        self.ot = UTCDateTime(0)
+        row.ot = ''
+    self.lat = row.lat
+    self.lon = row.lon
     self.origins = []
     self.preffered = None
-    if lat and lon:
-      self.l = mpl.lines.Line2D([self.lon],[self.lat],color='k',marker='o',label=' '.join([EID,str(ot)]))
-    else:
-      self.l = mpl.lines.Line2D([],[],color='k',marker='o',label=' '.join([EID,str(ot)]))
+    self.l = mpl.lines.Line2D([self.data.lon],[self.data.lat],color='k',marker='o',label=' '.join([row.eventid,row.ot]))
     self.l.item = self
   def addOrigin(self,origin):
     def verSort(x,y):
-      if x.ver==y.ver: return 0
-      if x.ver>y.ver:
+      if x.data.ver==y.data.ver: return 0
+      if x.data.ver>y.data.ver:
         return 1
       else:
         return -1
     origin.setEvent(self)
     self.origins.append(origin)
-    km = geo.inv(origin.lon,origin.lat,self.lon,self.lat)[-1]/1000.
-    Secs = origin.ot-self.ot
-    if origin.first:
-      self.setText(5,str(origin.ot))
-      self.setText(6,'%.1f'%(origin.mag))
-      self.setText(7,'%.2f'%(origin.lat))
-      self.setText(8,'%.2f'%(origin.lon))
-      if self.lat and self.lon:
-        self.setText(9,'%.2f'%(km))
-        self.setText(10,'%.2f'%(Secs))
-      self.setText(11,str(origin.EID))
+    if origin.data['first'] == 1:
       self.preffered = origin
-    self.origins.sort(verSort)
+      self.setText(5,str(origin.data.time))
+      self.setText(6,'%.1f'%(origin.data.mag))
+      self.setText(7,'%.2f'%(origin.data.evlat))
+      self.setText(8,'%.2f'%(origin.data.evlon))
+      if self.data.lat and self.data.lon:
+        self.setText(9,'%.2f'%(origin.km))
+        self.setText(10,'%.2f'%(origin.Secs))
+      self.setText(11,str(origin.data.eventid))
+    #self.origins.sort(verSort)
 
 
 class Origin(QTreeWidgetItem):
-  def __init__(self,EID,ver,ot,lat,lon,depth=10,mag=0,nT=0,nS=0,percnt=0,Aok=0,AT=0,first=0,OK=15):
-    QTreeWidgetItem.__init__(self,['-'.join([EID,'%d'%ver]),str(AT),str(ot),'%.1f'%mag,'%.3f'%lat,'%.3f'%lon,'','','%d'%nT,'%d'%nS,'%.2f'%percnt,['no','yes'][Aok],'%d'%OK])
-    if int(first):
+  def __init__(self,row):
+    """
+
+    :param row: pandas series. See LOGEVENTHEADERLINE for keys.
+    """
+    r = row.astype(str)
+    OK = np.packbits(row.loc[['fitok','splitok','prcntok','distok','nSok','Lok','Tok','Azok']].values.astype(int))[0]
+    QTreeWidgetItem.__init__(self,['-'.join([r.eventid,r.ver]),r.alert_time,r.time,r.mag,r.evlat,r.evlon,'','',r.nT,r.nS,r.percnt, ['no','yes'][int(row.Aok)],str(OK)])
+    if row.first:
       i = QIcon.fromTheme('emblem-default',QIcon(":/emblem-default.png"))
       self.setIcon(0,i)
-    self.EID = EID
-    self.ver = ver
-    self.ot = UTCDateTime(ot)
-    self.lat = float(lat)
-    self.lon = float(lon)
-    self.depth = float(depth)
-    self.mag = float(mag)
-    self.km = 0
-    self.Secs = 0
-    self.nT = int(nT)
-    self.nS = int(nS)
-    self.percnt = float(percnt)
-    self.Aok = Aok
+    self.data = row
+    self.ot = UTCDateTime(row.time)
     self.OK = OK
-    self.AT = UTCDateTime(AT)
-    self.first=int(first)
-    self.l = mpl.lines.Line2D([self.lon],[self.lat],color='k',marker='o',label=' '.join([EID,str(ver),str(ot)]))
+    self.AT = UTCDateTime(row.alert_time)
+    self.lon = row.evlon
+    self.lat = row.evlat
+    self.l = mpl.lines.Line2D([self.data.evlon],[self.data.evlat],color='k',marker='o',label=' '.join([r.eventid,r.ver,r.time]))
     self.l.item = self
     self.triggers = []
     self.event = None
@@ -325,45 +285,29 @@ class Origin(QTreeWidgetItem):
     self.triggers.append(trig)
     trig.origin = self
   def addTriggers(self,trigs):
-    [self.triggers.append(trig) for trig in trigs]
+    [self.addTrigger(trig) for trig in trigs]
   def setEvent(self,event):
     self.event = event
-    if event.lat and event.lon:
-      self.km = geo.inv(event.lon,event.lat,self.lon,self.lat)[-1]/1000.
+    if event.data.lat and event.data.lon:
+      self.km = geo.inv(event.data.lon,event.data.lat,self.data.evlon,self.data.evlat)[-1]/1000.
       self.setText(6,"%.2f"%self.km)
       self.Secs = self.ot-event.ot
       self.setText(7,"%.2f"%self.Secs)
 
 class StationMagnitude(QTreeWidgetItem):
-  def __init__(self,EID,ver,ID,net,sta,loc,chn,tt,lat,lon,pdmag,logpd=0,pdsnr=0,updm=0,tpmag=0,logtp=0,tpsnr=0,utpm=0,dist=0,azim=0,tterr=0):
-    QTreeWidgetItem.__init__(self,['-'.join([EID,str(ver)]),ID,str(tt),'%.3f'%lat,'%.3f'%lon,'%.1f'%dist,'%.2f'%tterr,'%.1f'%pdmag,['n','y'][updm],'%.2f'%logpd,'%.1f'%pdsnr,'%.1f'%tpmag,['n','y'][utpm],'%.2f'%logtp,'%.1f'%tpsnr,'%d'%azim])
-    self.EID = EID
-    self.ver = ver
-    try:
-      self.tt = UTCDateTime(tt)
-    except:
-      print >> sys.stderr,'Error with trigger timetamp:',EID,ver,tt
-      sys.exit()
-    self.lat = float(lat)
-    self.lon = float(lon)
-    self.logpd = float(logpd)
-    self.pdsnr = float(pdsnr)
-    self.pdmag = float(pdmag)
-    self.updm = float(updm)
-    self.logtp = float(logtp)
-    self.tpsnr = float(tpsnr)
-    self.tpmag = float(tpmag)
-    self.utpm = float(utpm)
-    self.dist = float(dist)
-    self.azim = float(azim)
-    self.tterr = float(tterr)
-    self.ID = ID
-    self.l = mpl.lines.Line2D([self.lon],[self.lat],color='k',marker='^',label=self.ID)
+  def __init__(self,row):
+    r = row.astype(str)
+    QTreeWidgetItem.__init__(self,r.to_list())
+    self.tt = UTCDateTime(r['trigger_time'])
+    self.stationID = '.'.join([r.net,r.sta,r['loc'],r.chan])
+    self.data = row
+    self.l = mpl.lines.Line2D([row.lon],[row.lat],color='k',marker='^',label=self.stationID)
     self.l.item = self
     self.origin = None
 
 class ConnectedLineEdit(QLineEdit):
   'QLineEdit class for connected limits (like max/min magnitude)'
+  validSignal = pyqtSignal()  # signal all is ok
   def __init__(self,val,minval,maxval,deci=2):
     QLineEdit.__init__(self)
     self.val = float(val)
@@ -372,7 +316,7 @@ class ConnectedLineEdit(QLineEdit):
     self.maxval=maxval
     self.validator1 = QDoubleValidator()
     self.validator1.setRange(minval,maxval,deci)
-    #self.setValidator(validator)
+    #self.setValidator(self.validate)
     self.editingFinished.connect(self.validate)
     self.setToolTip('%0.2lf <= Value >= %0.2lf'%(minval,maxval))
     self.connectedLineEdit = None
@@ -386,9 +330,9 @@ class ConnectedLineEdit(QLineEdit):
     self.connectedLineEditParam = param # should be top or bottom
     self.connected=True
   def validate(self):
-    if not self.validator1.validate(self.text(),2)==(2,2): # reset value if not valid
+    if not self.validator1.validate(self.text(),2)==(2,self.text(),2): # reset value if not valid
       self.setText(str(self.val))
-      return 0
+      return (QValidator.Invalid,0)
     if self.connected: # update connected widget limit or reset
       param = self.connectedLineEditParam
       widget = self.connectedLineEdit
@@ -397,24 +341,27 @@ class ConnectedLineEdit(QLineEdit):
       else:
         o = '>='
       if eval(str(widget.text())+o+str(self.text())):
+        print('b')
         self.val = float(self.text())
         eval('widget.validator1.set'+param.capitalize()+'('+str(self.val)+')')
         minval,maxval = (widget.validator1.bottom(),widget.validator1.top())
         widget.setToolTip("%0.2lf <= Value >= %0.2lf"%(minval,maxval))
-        self.emit(SIGNAL('ok'))
-        return 1
+        self.validSignal.emit()
+        return (QValidator.Acceptable,1)
       else:
         self.setText(str(self.val))
-        return 0
+        return (QValidator.Invalid,0)
     self.val = float(self.text())
-    self.emit(SIGNAL('ok'))
-    return 1
+    self.validSignal.emit()
+    return (QValidator.Acceptable,1)
+
+
 
 # map area dialog
 class bboxForm(QDialog):
   def __init__(self,parent=None):
     QDialog.__init__(self,parent=parent)
-    self.setWindowTitle('SCxmlDiff - Set area rectangle')
+    self.setWindowTitle('E2ReviewTool - Set area rectangle')
     vbox = QVBoxLayout(self)
     w = QWidget()
     grid = QGridLayout(w)
@@ -449,10 +396,10 @@ class bboxForm(QDialog):
     self.S.setText(str(s))
     self.N.setText(str(n))
   def getLims(self):
-    w = self.W.text().toDouble()[0]
-    e = self.E.text().toDouble()[0]
-    s = self.S.text().toDouble()[0]
-    n = self.N.text().toDouble()[0]
+    w = float(self.W.text())
+    e = float(self.E.text())
+    s = float(self.S.text())
+    n = float(self.N.text())
     return w,e,s,n
   def validate(self):
     w,e,s,n = self.getLims()
@@ -509,6 +456,15 @@ class Overlay(QWidget):
 
 class AppForm(QMainWindow):
   'QT form for application'
+  #  Signals
+  drawSignal = pyqtSignal(int)  # redraw map
+  blitSignal = pyqtSignal()  # redraw map fast
+  # messages signals
+  sysMsgSignal = pyqtSignal(str, int)  # add system message
+  trigMsgSignal = pyqtSignal(str,str)  # add trigger message
+  evntMsgSignal = pyqtSignal(str,int)  # add event message
+  errMsgSignal = pyqtSignal(str,int)  # add error message
+
   def __init__(self, splash,args,parent=None):
     self.starttime=UTCDateTime(0) # start time of data
     self.endtime=UTCDateTime() # end time of data
@@ -524,9 +480,9 @@ class AppForm(QMainWindow):
     self._blits = []
     self._drawing=False # are we in a canvas drawing phase?
     self._resizing=False # are we in a window resize phase?
-    self._origins = array([]) # dictionary of input origins
-    self._triggers = array([]) # dictionary of input origins
-    self._refdict = {} # dictionary of reference events
+    self._origins = pd.DataFrame(columns=LOGEVENTHEADERLINE.split()[1:])  # origins table
+    self._triggers = pd.DataFrame(columns=LOGTRIGGERHEADERLINE.split()[1:])  # triggers table
+    self._refdict =  pd.DataFrame(columns=EVENTHEADERLINE.split()[1:])  # table of reference (catalog) events
     self._fixmags = True # should we use Sadeh et al., 2014 Pd  - magnitude relations?
     self._fixdist= True # use real distance of estimated distance
     self._deletedEvents = [] # a list of deleted events
@@ -574,11 +530,11 @@ class AppForm(QMainWindow):
   def init_connections(self):
     '''Connect signals to functions.
        Using signals to run functions from subprocesses.'''
-    self.connect(self,SIGNAL('drawSignal'),self.draw) # draw canvas
-    self.connect(self,SIGNAL('blitSignal'),self.blit) # blit draw canvas
+    self.drawSignal.connect(self.draw)  # draw canvas
+    self.blitSignal.connect(self.blit)  # blit draw canvas
     self.Bbox.accepted.connect(self.onBboxAccepted) # connect bbox to dialog ok button
-    self.connect(self.minmagLine, SIGNAL('ok'),self.updateMagLims)
-    self.connect(self.maxmagLine, SIGNAL('ok'),self.updateMagLims)
+    self.minmagLine.validSignal.connect(self.updateMagLims)
+    self.maxmagLine.validSignal.connect(self.updateMagLims)
     self.starttimeLine.dateTimeChanged.connect(self.updatestarttime)
     self.endtimeLine.dateTimeChanged.connect(self.updateendtime)
     self.fixmagsCheck.stateChanged.connect(self.updateFixMags)
@@ -671,7 +627,7 @@ class AppForm(QMainWindow):
     self.osm.relimcorrected(x0,x1,y0,y1) # make sure limits are not out of map phisical boundaries. see osm module for more details.
     tiles = self.osm.gettiles(x0,x1,y0,y1) # get the needed tiles from buffer or url. see osm module for more details
     self.osm.plottiles(tiles) # plot the tiles. see osm module for more details
-    self.emit(SIGNAL('drawSignal')) # call self draw using a signal in case we are in a subprocess.
+    self.drawSignal.emit(True) # call self draw using a signal in case we are in a subprocess.
     self.statusBar().showMessage('Done redrawing.',2000) # note user we are done with redrawing.
     self.blur.setEnabled(False)
     self.blur.update()
@@ -689,12 +645,12 @@ class AppForm(QMainWindow):
         self.meter.set_data([self.meter._xorig[0],evt.xdata],[self.meter._yorig[0],evt.ydata]) # adjust meter line edges
         self._blits.append(self.meter)
         self.statusBar().showMessage('Distance: %lfkm'%(geo.inv(self.meter._xorig[0],self.meter._yorig[0],self.meter._xorig[-1],self.meter._yorig[-1])[-1]/1000.)) # show user the distance
-        self.emit(SIGNAL('blitSignal'),True) # draw the map
+        self.blitSignal.emit() # draw the map
         return # we're done here
       hide = True # unless we don't measure but simply pointing along the map
       label = [] # a list of labels to present in a tooltip
-      for l in self.ax.hitlist(evt): # see if mouse points at objects of the map
-        if l in self.ax.lines and not l in self.auxiliaryLines: # if object is a line
+      for l in self.ax.lines: # see if mouse points at objects of the map
+        if not l in self.auxiliaryLines and l.contains(evt)[0]: # if object is a line
           if not l.get_label() in label: label.append(l.get_label()) # get it's label to the list
           hide=False # a flag for tooltip widget
       if not hide: # if we don't hide the tooltip
@@ -708,8 +664,8 @@ class AppForm(QMainWindow):
     'handle mouse clicks'
     if evt.button==1 and not evt.dblclick: # in case its a single left button click
       if evt.inaxes and self.toolbar.mode=='': # and not on a toolbar action of pan/zoom
-        for l in self.ax.hitlist(evt): # see if mouse points at objects of the map
-          if type(l)==mpl.lines.Line2D:
+        for l in self.ax.lines: # see if mouse points at objects of the map
+          if l.contains(evt)[0]:
             try:
               item = l.item # get the item
             except:
@@ -718,7 +674,7 @@ class AppForm(QMainWindow):
             if type(item)==Origin: item=item.event
             if not type(item)==CatalogEvent: continue
             self.eventWidget.clearSelection()# unselect other items
-            self.eventWidget.setItemSelected(item,True) # select the item
+            self.eventWidget.setCurrentItem(item) # select the item
             self.eventWidget.scrollToItem(item) # go to item on list
             self.on_event_dbclicked(item)
             return # we're out of here
@@ -730,7 +686,7 @@ class AppForm(QMainWindow):
         self._meterBackground = self._background
         self.ax.add_artist(self.meter) # add the meter to the axes
         self._blits.append(self.meter) # add the meter to the blits list
-        self.emit(SIGNAL('blitSignal')) # fast drawing
+        self.blitSignal.emit() # fast drawing
         return # we're out of here
 
   def on_unclick(self,evt):
@@ -739,7 +695,7 @@ class AppForm(QMainWindow):
       self.meter.remove() # remove the meter from the axes
       self._background = self._meterBackground
       self._meterBackground = None
-      self.emit(SIGNAL('blitSignal'),True) # redraw the map
+      self.blitSignal.emit() # draw the map
       self.statusBar().showMessage('Distance: %lfkm'%(geo.inv(self.meter._xorig[0],self.meter._yorig[0],self.meter._xorig[-1],self.meter._yorig[-1])[-1]/1000.),1000) # last update of the measurement distance
       self.meter.set_data([],[]) # remove any data from the meter line
 
@@ -768,7 +724,7 @@ class AppForm(QMainWindow):
       self.eventWidget.clearSelection()
       self.historyWidget.clearSelection()
       self.triggerWidget.clearSelection()
-      self.emit(SIGNAL("drawSignal"))
+      self.drawSignal.emit(True)
 
   def grid(self):
     'toggle grid on or off'
@@ -854,7 +810,8 @@ class AppForm(QMainWindow):
     self.triggerWidget.setColumnCount(16)
     self.triggerWidget.setSortingEnabled(True)
     self.triggerWidget.setMouseTracking(True)
-    header = ['EvID','StaID','Trigger-Time','Latitude','Longitude','DistKm','TTErr','Mag (Pd)','Used','LogPd','PdSNR','Mag (tauP)','Used','LogTauP','TaupSNR','Azimuth']
+    #header = ['EvID','StaID','Trigger-Time','Latitude','Longitude','DistKm','TTErr','Mag (Pd)','Used','LogPd','PdSNR','Mag (tauP)','Used','LogTauP','TaupSNR','Azimuth']
+    header = LOGTRIGGERHEADERLINE.split()[1:]
     self.triggerWidget.setHeaderLabels(header)
     self.triggerWidget.sortItems(2,0)
     self.treeSplitter.addWidget(self.triggerWidget)
@@ -970,7 +927,7 @@ class AppForm(QMainWindow):
     data = [['cEID','cOT','cMAG','cLON','cLAT',
              'oEID','oOT','oMAG','oLON','oLAT',
              'tID','tT','tLON','tLAT','logpd','pdmag','logtp','dist']]
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       ev = self.eventWidget.topLevelItem(i)
       if ev.isHidden(): continue # skip hidden
       if ev.preffered: 
@@ -1000,21 +957,21 @@ class AppForm(QMainWindow):
   def get_input_file(self,filesurl=None,update=1):
     'open a dialog to get a file name'
     if not filesurl:
-      filesurl = QFileDialog.getOpenFileNames(self, 'Open ElarmS Log file(s)',filter='Log Files (*.log);;All Files (*.*)') # get the file name
+      filesurl,msk = QFileDialog.getOpenFileNames(self, 'Open ElarmS Log file(s)',filter='Log Files (*.log);;All Files (*.*)') # get the file name
     LOGs = [str(f) for f in filesurl]
     self._origins,self._triggers = concatenateLOG(LOGs)
-    if not len(self._origins):
+    if not self._origins.shape[0]:
       self.statusBar().showMessage('No Events in file.', 2000)
       if update: self.refreshDisplay(True)
       return
-    self.statusBar().showMessage('Loaded %d events'%len(self._origins), 2000)
+    self.statusBar().showMessage('Loaded {} events'.format(self._origins.shape[0]), 2000)
     self._associate = True
     if update: self.refreshDisplay(True)
 
   def get_ref_file(self,filesurl=None,update=1):
     'open a dialog to get a file name'
     if not filesurl:
-      filesurl = QFileDialog.getOpenFileNames(self, 'Open Reference data file(s)',filter='CSV Files (*.csv);;All Files (*.*)') # get the file name
+      filesurl,msk = QFileDialog.getOpenFileNames(self, 'Open Reference data file(s)',filter='CSV Files (*.csv);;All Files (*.*)') # get the file name
     CSVs = [str(f) for f in filesurl]
     self._refdict = concatenateCSV(CSVs)
     if not len(self._refdict):
@@ -1027,58 +984,70 @@ class AppForm(QMainWindow):
 
   def updatetables(self):
     self.clearTables()
-    print UTCDateTime(),'updatetables'
+    log.info('updatetables')
     if self._associate:
-      print UTCDateTime(),'updatetables associate'
+      log.info('updatetables associate')
       self.associate()
     # get associated and unassociated events
-    refs = [v['refID'] for v in self._refdict.values()] #  associated
-    unassociated = dict([(EID,'') for EID in self._origins if not EID in refs]) # unassociated
+    refs = self._refdict.RefID.unique() #  associated
+    unassociated = self._origins.loc[-self._origins.eventid.isin(refs),'eventid'].unique()  # unassociated
     # scan catalog events
-    print UTCDateTime(),'updatetables associated'
-    for ref in self._refdict.values():
-      parent = CatalogEvent(*ref) # create an event line
-      if parent.refID in self._origins: # look for associated origins
+    log.info('updatetables associated')
+    for i, ref in self._refdict.iterrows():
+      parent = CatalogEvent(ref) # create an event line
+      if parent.data.RefID in refs: # look for associated origins
         parent.l.set_color('yellow') # mark as True
-        for origin in self._origins[parent.refID]:# look for all origins
-          event = Origin(*origin) # create an origin line
+        for j,origin in self._origins[self._origins.eventid==parent.data.RefID].iterrows():# look for all origins
+          event = Origin(origin) # create an origin line
           parent.addOrigin(event) # add origin to event
           event.l.set_color('green') # mark as True
-          if event.first and not event.l in self.ax.lines: self.ax.add_line(event.l)# add line to map
+          if event.data['first'] and not event.l in self.ax.lines:
+            self.ax.add_line(event.l)# add line to map
           self.historyWidget.addTopLevelItem(event)# add origin to history widget
           event.setHidden(True)
-          for trigger in self._triggers['-'.join([event.EID,str(event.ver)])]:
-            trig = StationMagnitude(*trigger)
-            if not trig.l in self.ax.lines: self.ax.add_line(trig.l)# add line to map
+          for k,trigger in self._triggers[(self._triggers.eventid==origin.eventid) & (self._triggers['ver']==origin['ver'])].iterrows():
+            trig = StationMagnitude(trigger)
+            if not trig.l in self.ax.lines:
+              self.ax.add_line(trig.l)# add line to map
             event.addTrigger(trig)
             self.triggerWidget.addTopLevelItem(trig)
             trig.setHidden(True)
       else:
         parent.l.set_color('orange') # mark as Missed
-      if not parent.l in self.ax.lines: self.ax.add_line(parent.l)# add line to map
+      if not parent.l in self.ax.lines:
+        self.ax.add_line(parent.l)# add line to map
       self.eventWidget.addTopLevelItem(parent) # add item to widget
-    print UTCDateTime(),'updatetables unassociated'
+    log.info('updatetables unassociated')
     # scan unassociated origins
     for EID in unassociated:
-      parent = CatalogEvent(refID=EID) # create an event line
-      if not len([origin for origin in self._origins[EID] if origin['first']])>0: continue # don't add unassociated unreported events
-      for origin in self._origins[EID]: # look for all origins
-        event = Origin(*origin) # create an origin line
+      if not self._origins[(self._origins.eventid==EID) & (self._origins['first']==1)].shape[0]:
+        continue # don't add unassociated unreported events
+      parent = CatalogEvent(EID) # create an event line
+      for i,origin in self._origins[self._origins.eventid==EID].iterrows(): # look for all origins
+        event = Origin(origin) # create an origin line
         parent.addOrigin(event) # add origin to event
         event.l.set_color('red') # mark as False
-        if event.first:
-          if not event.l in self.ax.lines: self.ax.add_line(event.l)# add line to map
+        if event.data['first']:
+          if not event.l in self.ax.lines:
+            self.ax.add_line(event.l)# add line to map
           parent.ot = event.ot # add origin time to event
-          parent.setText(1,str(event.ot))
+          parent.data.ot = event.data.time
+          parent.setText(1,event.data.time)
+          parent.data.RefID = origin.eventid
+          parent.data.VerID = origin.ver
+          parent.data.typ = -1
+          parent.setText(14,'-1')
         self.historyWidget.addTopLevelItem(event)# add origin to history widget
         event.setHidden(True)
-        for trigger in self._triggers['-'.join([event.EID,str(event.ver)])]:
-          trig = StationMagnitude(*trigger)
-          if not trig.l in self.ax.lines: self.ax.add_line(trig.l)# add line to map
+        for j,trigger in self._triggers[(self._triggers.eventid==EID) & (self._triggers.ver==origin.ver)].iterrows():
+          trig = StationMagnitude(trigger)
+          if not trig.l in self.ax.lines:
+            self.ax.add_line(trig.l)# add line to map
           event.addTrigger(trig)
           self.triggerWidget.addTopLevelItem(trig)
           trig.setHidden(True)
-      if not parent.l in self.ax.lines: self.ax.add_line(parent.l)# add line to map
+      if not parent.l in self.ax.lines:
+        self.ax.add_line(parent.l)# add line to map
       self.eventWidget.addTopLevelItem(parent) # add item to widget
 
   def refreshDisplay(self,update=False):
@@ -1086,16 +1055,16 @@ class AppForm(QMainWindow):
     QApplication.processEvents()
     if update:
       self.updatetables()
-    print UTCDateTime(),'updatetables Fix Mag'
+    log.info('updatetables Fix Mag')
     self.fixMags()
-    print UTCDateTime(),'updatetables Filter'
+    log.info('updatetables Filter')
     self.filterEvents() # hide unwanted events
-    print UTCDateTime(),'updatetables summary'
+    log.info('updatetables summary')
     self.updateSummary()
-    print UTCDateTime(),'updatetables histogram and plot'
+    log.info('updatetables histogram and plot')
     self.updateHistPlot()
-    print UTCDateTime(),'updatetables done'
-    self.emit(SIGNAL('drawSignal'))
+    log.info('updatetables done')
+    self.drawSignal.emit(True)
     self.refreshbuttonHilight.setStrength(0) # reset button colors
     self.blur.setEnabled(False)
     self.blur.update()
@@ -1118,7 +1087,7 @@ class AppForm(QMainWindow):
 
   def clearMap(self):
     # remove points from plot
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       event = self.eventWidget.topLevelItem(i)
       for origin in event.origins:
         for trigger in origin.triggers:
@@ -1129,22 +1098,22 @@ class AppForm(QMainWindow):
 
   def filterEvents(self):
     'filter events by time,location and magnitude limits'
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       FILTER=False # don't filter default
       ev = self.eventWidget.topLevelItem(i) # get an event from the list
       event = ev # generate a reference
-      if not ev.lat or not ev.lon: # if its an unassociated event
+      if ev.data.lat is np.nan or ev.data.lon is np.nan: # if its an unassociated event
         event = ev.preffered # get its prefered origin as reference
-      if not (self.minmag <= event.mag <= self.maxmag \
-              and UTCDateTime(self.starttime) <= event.ot <= UTCDateTime(self.endtime) \
-              and self.bbox[0] <= event.lon <=self.bbox[1] \
+      if not (self.minmag <= event.data.mag <= self.maxmag
+              and UTCDateTime(self.starttime) <= event.ot <= UTCDateTime(self.endtime)
+              and self.bbox[0] <= event.lon <=self.bbox[1]
               and self.bbox[2] <= event.lat <= self.bbox[3]):
         FILTER=True # filter if the reference is out of limits
       try:
-        if FILTER and (self.minmag <= event.preffered.mag <= self.maxmag \
-              and UTCDateTime(self.starttime) <= event.preffered.ot <= UTCDateTime(self.endtime) \
-              and self.bbox[0] <= event.preffered.lon <=self.bbox[1] \
-              and self.bbox[2] <= event.preffered.lat <= self.bbox[3]):
+        if FILTER and (self.minmag <= event.preffered.data.mag <= self.maxmag
+              and UTCDateTime(self.starttime) <= event.preffered.ot <= UTCDateTime(self.endtime)
+              and self.bbox[0] <= event.preffered.data.evlon <=self.bbox[1]
+              and self.bbox[2] <= event.preffered.data.evlat <= self.bbox[3]):
           FILTER=False # don't filter if the reference preffered origin is within limits
       except: # we are already looking at an un associated origin
         pass
@@ -1164,7 +1133,7 @@ class AppForm(QMainWindow):
           pass
 
   def filterBlasts(self):
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       event = self.eventWidget.topLevelItem(i)
       if int(event.text(12))==2:
         event.setHidden(True)
@@ -1207,59 +1176,60 @@ class AppForm(QMainWindow):
   def associate(self):
     self._associate=False
     assoc = []
-    for event in self._refdict.values():
+    for i, event in self._refdict.iterrows():
       bestOrigin = None
-      for refID in self._origins:
+      for refID in self._origins.eventid.unique():
         if refID in assoc: continue
-        origin = [origin for origin in self._origins[refID] if origin['first']] # get the first reported origin
-        if not len(origin)>0: # if non was reported...
+        origin = self._origins[(self._origins.eventid == refID) & (self._origins.Ast == 1) & (self._origins['first'] == 1)]  # get the first reported origin
+        if not origin.shape[0]: # if non was reported...
           if self.reportedOnly: continue # if we use only reported events skip this one
-          origin = [orig for orig in self._origins[refID] if orig['OK']==7] # get all origins that didn't alert due to low magnitude
-          if not len(origin)>0: # if no origin is available...
-            continue
-        origin = origin[0] # convert list to object
-        origin['first']=1 # set as first
+        origin = self._origins[(self._origins.eventid == refID) & (self._origins['first'] == 1)]  # get the first origin event if not reported
+        if not origin.shape[0]: # if still no origin is available...
+          continue
+        origin = origin.iloc[0]  # convert list to object
         # chack distance and time
-        if geo.inv(origin['lon'],origin['lat'],event['lon'],event['lat'])[-1]/1000.>self.deltaR \
-           or abs(UTCDateTime(origin['ot'])-UTCDateTime(event['ot']))>self.deltaT: continue
+        if geo.inv(origin['evlon'],origin['evlat'],event['lon'],event['lat'])[-1]/1000.>self.deltaR \
+           or abs(UTCDateTime(origin['time'])-UTCDateTime(event['ot']))>self.deltaT: continue
         if self.deltaM and abs(origin['mag']-event['mag'])>self.deltaM: continue
-        if not bestOrigin or \
-               abs(UTCDateTime(bestOrigin['ot'])-UTCDateTime(event['ot']))>abs(UTCDateTime(origin['ot'])-UTCDateTime(event['ot'])) or \
-               geo.inv(bestOrigin['lon'],origin['lat'],event['lon'],event['lat'])[-1]/1000.>geo.inv(origin['lon'],origin['lat'],event['lon'],event['lat'])[-1]/1000.:
-          bestOrigin=origin
-      if bestOrigin:
-        event['refID']=bestOrigin['EID']
-        assoc.append(bestOrigin['EID'])
+        if bestOrigin is None or \
+               abs(UTCDateTime(bestOrigin['time'])-UTCDateTime(event['ot']))>abs(UTCDateTime(origin['time'])-UTCDateTime(event['ot'])) or \
+               geo.inv(bestOrigin['evlon'],origin['evlat'],event['lon'],event['lat'])[-1]/1000.>geo.inv(origin['evlon'],origin['evlat'],event['lon'],event['lat'])[-1]/1000.:
+          bestOrigin = origin
+      if bestOrigin is not None:
+        self._refdict.loc[i,'RefID'] = bestOrigin.eventid
+        self._refdict.loc[i,'RefVer'] = bestOrigin['ver']
+        assoc.append(bestOrigin.eventid)
 
   def fixMags(self):
     'using Sadeh et al., 2014 to fix magnitudes'
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       event = self.eventWidget.topLevelItem(i)
       if not len(event.origins): continue
+      if event.data.lat is np.nan or event.data.lon is np.nan: continue
       for origin in event.origins:
         mags = []
         for trigger in origin.triggers:
           if self._fixdist:
-            dist=geo.inv(trigger.lon,trigger.lat,event.lon,event.lat)[-1]/1000.
+            dist=geo.inv(trigger.data.lon,trigger.data.lat,event.data.lon,event.data.lat)[-1]/1000.
           else:
-            dist=trigger.dist
+            dist=trigger.data.distkm
           if self._fixmags:
-            trigger.pdmag = Sadehpdmag(trigger.logpd,dist)
+            trigger.data.pdmag = Sadehpdmag(trigger.data['log_pd'],dist)
           else:
-            trigger.pdmag = E2pdmag(trigger.logpd,dist)
-          if trigger.updm: mags.append(trigger.pdmag)
-          trigger.setText(7,"%.2f"%trigger.pdmag)
+            trigger.data.pdmag = E2pdmag(trigger.data['log_pd'],dist)
+          if trigger.data.updm: mags.append(trigger.data.pdmag)
+          trigger.setText(22,"%.2f"%trigger.data.pdmag)
         if not len(mags): continue
-        origin.mag = array(mags).mean()
-        origin.setText(3,"%.2f"%origin.mag)
+        origin.data.mag = np.array(mags).mean()
+        origin.setText(3,"%.2f"%origin.data.mag)
       if event.preffered:
-        event.setText(6,"%.2f"%event.preffered.mag)
+        event.setText(6,"%.2f"%event.preffered.data.mag)
 
   def on_event_entered(self,item,col=0):
     'event tree element is entered by mouse'
     if self.lastEventEntered==item: return
     if self.lastEventEntered: self.event_restore(self.lastEventEntered)
-    self.emit(SIGNAL("blitSignal"))
+    self.blitSignal.emit() # draw the map
     self._background = self.canvas.copy_from_bbox(self.ax.bbox)
     item.l.set_markersize(10) # enlarge
     item.l.set_zorder(99) # bring to front
@@ -1269,7 +1239,7 @@ class AppForm(QMainWindow):
       item.preffered.l.set_zorder(99) # bring to front
       self._blits.append(item.preffered.l)
     self.lastEventEntered = item
-    self.emit(SIGNAL("blitSignal"))
+    self.blitSignal.emit() # draw the map
 
   def on_history_entered(self,item,col=0):
     self.on_event_entered(item.event,0)
@@ -1280,7 +1250,7 @@ class AppForm(QMainWindow):
       self.goToLocation(item.l) # zoom to item
     else:
       self.goToLocation(item.preffered.l)
-    #self.emit(SIGNAL("drawSignal"))
+    #self.drawSignal.emit(True)
 
   def on_history_clicked(self,item,col=0):
     'click on event widget element'
@@ -1290,10 +1260,10 @@ class AppForm(QMainWindow):
     self.updateHistory(item)
     self.updateInfo(item)
     if item.preffered:
-      self.historyWidget.setItemSelected(item.preffered,True)
+      self.historyWidget.setCurrentItem(item.preffered)
       self.historyWidget.scrollToItem(item.preffered)
       self.on_history_dbclicked(item.preffered)
-    #if not self._drawing: self.emit(SIGNAL("drawSignal"))
+    #if not self._drawing: self.drawSignal.emit(True)
 
   def on_history_dbclicked(self,item,col=0):
     self.updateTriggers(item)
@@ -1302,16 +1272,16 @@ class AppForm(QMainWindow):
       if not item.l in self.ax.lines:
         self.ax.add_line(item.l)
         self.auxiliaryLines.append(item.l)
-    if not self._drawing: self.emit(SIGNAL("drawSignal"))
+    if not self._drawing: self.drawSignal.emit(True)
 
   def on_line_Pick(self,event):
     try:
       event.canvas.toolbar.set_message(event.artist.get_label())
-    except Exception as E:
-      print str(E)
+    except Exception as EX:
+      log.warning(EX)
 
   def updateInfo(self,item):
-    if item.lat and item.lon:
+    if item.data.lat and item.data.lon:
       x = [] # time since origin
       t = [] # ot err
       m = [] # mag err
@@ -1320,26 +1290,26 @@ class AppForm(QMainWindow):
       for origin in item.origins:
         x.append(origin.AT-item.ot)
         t.append(origin.Secs)
-        m.append(origin.mag-item.mag)
+        m.append(origin.data.mag-item.data.mag)
         l.append(origin.km)
-        reported.append(origin.Aok)
-      x,t,m,l = array(x),array(t),array(m),array(l)
+        reported.append(origin.data.Aok)
+      x,t,m,l = np.array(x),np.array(t),np.array(m),np.array(l)
       self.timeerrWidget.ax.lines[0].set_data(x,t)
-      self.timeerrWidget.ax.collections = [self.timeerrWidget.ax.scatter(x[where(reported)[0]],t[where(reported)[0]],edgecolor='b',marker='o',s=120,facecolor='None')]
+      self.timeerrWidget.ax.collections = [self.timeerrWidget.ax.scatter(x[np.where(reported)[0]],t[np.where(reported)[0]],edgecolor='b',marker='o',s=120,facecolor='None')]
       self.magerrWidget.ax.lines[0].set_data(x,m)
-      self.magerrWidget.ax.collections = [self.magerrWidget.ax.scatter(x[where(reported)[0]],m[where(reported)[0]],edgecolor='b',marker='o',s=120,facecolor='None')]
+      self.magerrWidget.ax.collections = [self.magerrWidget.ax.scatter(x[np.where(reported)[0]],m[np.where(reported)[0]],edgecolor='b',marker='o',s=120,facecolor='None')]
       self.locerrWidget.ax.lines[0].set_data(x,l)
-      self.locerrWidget.ax.collections = [self.locerrWidget.ax.scatter(x[where(reported)[0]],l[where(reported)[0]],edgecolor='b',marker='o',s=120,facecolor='None')]
+      self.locerrWidget.ax.collections = [self.locerrWidget.ax.scatter(x[np.where(reported)[0]],l[np.where(reported)[0]],edgecolor='b',marker='o',s=120,facecolor='None')]
     [ax.relim() for ax in [self.timeerrWidget.ax,self.magerrWidget.ax,self.locerrWidget.ax]]
     [ax.autoscale() for ax in [self.timeerrWidget.ax,self.magerrWidget.ax,self.locerrWidget.ax]]
     [ax.figure.canvas.draw() for ax in [self.timeerrWidget.ax,self.magerrWidget.ax,self.locerrWidget.ax]]
 
   def auxiliarySet(self,item,preffered):
     self.auxiliaryClear()
-    if item.lat and item.lon:
-      self.auxiliaryLines.append(mpl.lines.Line2D([preffered.lon,item.lon],[preffered.lat,item.lat],color='0.5'))
+    if item.data.lat and item.data.lon:
+      self.auxiliaryLines.append(mpl.lines.Line2D([preffered.data.evlon,item.data.lon],[preffered.data.evlat,item.data.lat],color='0.5'))
     for trigger in preffered.triggers:
-      self.auxiliaryLines.append(mpl.lines.Line2D([preffered.lon,trigger.lon],[preffered.lat,trigger.lat],linestyle='dotted',color='0.5'))
+      self.auxiliaryLines.append(mpl.lines.Line2D([preffered.data.evlon,trigger.data.lon],[preffered.data.evlat,trigger.data.lat],linestyle='dotted',color='0.5'))
     [self.ax.add_line(l) for l in self.auxiliaryLines]
 
   def updateHistory(self,item):
@@ -1384,11 +1354,11 @@ class AppForm(QMainWindow):
     t,m,f = 0,0,0
     item = None
     # got to first visible item
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       item = self.eventWidget.topLevelItem(i)
       if not item.isHidden(): break
     while item:
-      if item.lat and item.lon:
+      if item.data.lat is not np.nan and item.data.lon is not np.nan:
         if len(item.origins):
           t=t+1
         else:
@@ -1415,24 +1385,24 @@ class AppForm(QMainWindow):
     tmag = []
     tmagu = []
     omag = []
-    for i in xrange(self.eventWidget.topLevelItemCount()):
+    for i in range(self.eventWidget.topLevelItemCount()):
       event = self.eventWidget.topLevelItem(i)
-      if not event.lat and not event.lon: continue
+      if event.data.lat is np.nan and event.data.lon is np.nan: continue
       if event.isHidden(): continue
       if not event.preffered: continue
-      omag.append((event.mag,event.preffered.mag,event.refID))
+      omag.append((event.data.mag,event.preffered.data.mag,event.data.RefID))
       for trigger in event.preffered.triggers:
-        if trigger.updm:
-          tmag.append((event.mag,trigger.pdmag,event.refID+' '+trigger.ID))
+        if trigger.data.updm:
+          tmag.append((event.data.mag,trigger.data.pdmag,event.data.RefID+' '+trigger.stationID))
         else:
-          tmagu.append((event.mag,trigger.pdmag,event.refID+' '+trigger.ID))
+          tmagu.append((event.data.mag,trigger.data.pdmag,event.data.RefID+' '+trigger.stationID))
     ax = self.maghistWidget.ax
     ax.patches=[]
     ax.lines=[]
     if len(tmag) and len(omag):
-      dm = array([(mag[1]-mag[0]) for mag in tmag])
+      dm = np.array([(mag[1]-mag[0]) for mag in tmag])
       ax.hist(dm,50,(-5,5),histtype='stepfilled',color='0.5',label='Stations (%d) mean: %.2f std: %.2f'%(len(dm),dm.mean(),dm.std()))
-      dm = array([(mag[1]-mag[0]) for mag in omag])
+      dm = np.array([(mag[1]-mag[0]) for mag in omag])
       ax.hist(dm,50,(-5,5),histtype='stepfilled',color='0.25',label='Events (%d) mean: %.2f std: %.2f'%(len(dm),dm.mean(),dm.std()))
       ax.legend(frameon=False,loc=6,handlelength=0.5,fontsize=8)
     #ax.relim()
@@ -1689,7 +1659,8 @@ class AppForm(QMainWindow):
       action.setToolTip(tip)
       action.setStatusTip(tip)
     if slot is not None:
-      self.connect(action, SIGNAL(signal), slot)
+      #self.connect(action, SIGNAL(signal), slot)
+      action.triggered.connect(slot)
     if checkable:
       action.setCheckable(True)
     return action
@@ -1789,7 +1760,7 @@ if __name__=="__main__":
   mpl.rcParams['figure.facecolor']='w'
   main(args)
 else:
-  print '''
+  print('''
 
 import glob
 app = QApplication([])
@@ -1801,7 +1772,7 @@ self.show()
 
 
 
-  '''
+  ''')
 
 
 w='''
@@ -1845,13 +1816,21 @@ for EID in edict:
 
 
 def pdtp(logpds,logtps):
-  return log10(mean([10**i for i in logpds])),log10(mean([10**i for i in logtps]))
+  return np.log10(np.mean([10**i for i in logpds])), np.log10(np.mean([10**i for i in logtps]))
 
 def on_point_Pick(event):
   try:
     event.canvas.toolbar.set_message(event.artist.get_label())
   except Exception as E:
-    print str(E)
+    print(str(E))
+
+def gii2csv(filename):
+  df = pd.read_csv(filename)
+  df.rename(columns={'epiid':'eventid','DateTime':'ot','Md':'mag','Lat':'lat','Long':'lon','Depth(Km)':'depth','Type':'typ'},inplace=True)
+  df.eventid = df.eventid.str.replace("'",'')
+  df.mag = df.apply(lambda row: row.mag or row.Mw,axis=1)
+  df = df[['eventid', 'mag', 'typ', 'lat', 'lon', 'depth', 'ot']]
+  return df
 
 '''
 fig = figure()
