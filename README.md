@@ -1,7 +1,7 @@
 # E2ReviewTool
-### ElarmS Review Tool - Review ElarmS E2 log files
+### ElarmS Review Tool - Review ElarmS log files
 Elarms is an Earthquake Early Warning System (EEWS), developed at Berkeley Seismological Lab (http://seismo.berkeley.edu/).
-E2ReviewTool is aimed to help in reviewing ElarmS E2 module performenses, comparing results to a catalog file.
+E2ReviewTool is aimed to help in reviewing ElarmS or EPIC E2 module performenses, comparing results to a catalog file.
 The tool allows a visual inspection of the events location and parameters including their evolution with time.
 Created by Ran Novitsky Nof (ran.nof@gmail.com), 2015 @ BSL
 
@@ -9,13 +9,16 @@ Created by Ran Novitsky Nof (ran.nof@gmail.com), 2015 @ BSL
 This is a beta version, and is still under development. Please report of any bug found.
 
 #### DEPENDENCIES:
-python (tested on 2.7) modules:
+python (tested on 3.7) modules:
 
 -   numpy - http://numpy.org
 -   matplotlib - http://matplotlib.org
--   PyQt4 - http://www.riverbankcomputing.com
+-   PyQt5 - http://www.riverbankcomputing.com
 -   pyproj - https://pypi.python.org/pypi/pyproj
 -   obspy - http://obspy.org
+-   pandas - https://pandas.pydata.org
+
+See requirements.txt for more details.
 
 #### USAGE:
 <pre>
@@ -35,6 +38,13 @@ optional arguments:
   -b bounds bounds bounds bounds
                         Region bounding box (west east south north)
 </pre>
+
+#### INSTALL:
+- Install Python 3.7 including venv and dev packages
+- Clone the git repo
+- Create venv
+- Install required python modules
+
 #### LICENSE:
   E2ReviewTool is free software: you can redistribute it and/or modify
   it under the terms of the GNU Lesser General Public License as published by
