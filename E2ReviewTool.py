@@ -149,6 +149,7 @@ logeventdtype = np.dtype(list(zip(LOGEVENTHEADERLINE.split()[1:], LOGEVENTHEADER
 logtriggerdtype = np.dtype(list(zip(LOGTRIGGERHEADERLINE.split()[1:], LOGTRIGGERHEADERTYPE)))
 
 def concatenateCSV(CSVs):
+  log.debug('Reading {} CSV files Start'.format(len(CSVs)))
   events = pd.DataFrame(columns=EVENTHEADERLINE.split()[1:])  # events table
   for f in CSVs:
     try:
@@ -165,12 +166,13 @@ def concatenateCSV(CSVs):
       log.warning(EX)
       continue
     events = events.append(data,ignore_index=True,sort=False)
-  #events.replace(np.nan,'',inplace=True)
+  log.debug('Reading CSV files Done')
   return events
 
 
 def concatenateLOG(LOGs):
   """ Parse log entries for event message"""
+  log.debug('Reading {} LOG files Start'.format(len(LOGs)))
   origins = pd.DataFrame(columns=LOGEVENTHEADERLINE.split()[1:])  # origins table
   triggers = pd.DataFrame(columns=LOGTRIGGERHEADERLINE.split()[1:])  # triggers table
   for f in LOGs:
@@ -179,14 +181,34 @@ def concatenateLOG(LOGs):
         for line in logfile:
           if re.search('.+E:I:[ F][ :]\s+\w', line):  # An event entry
             values = line.split()[1:]
-            origins.loc[origins.shape[0],:-1] = values
+            if len(values)==43:
+                values.insert(38,'0')  # Add TF value for old versions.
+            try:
+                origins.loc[origins.shape[0],:-1] = values
+            except Exception as EX:
+                log.warning('{}\n{}'.format(line,EX))
+                continue
           elif re.search('.+E:I:T:\s+\w', line):  # A trigger entry
             values = line.split()[1:]
-            triggers.loc[triggers.shape[0]] = values
+            if len(values)==45:
+                values.insert(33,'0') # add TF value for old versions
+                values.insert(35,'0') # add azerror value for old versions
+                values.insert(36,'0') # add incid value for old versions
+                values.insert(48,'0') # add zc value for old versions
+                values.insert(49,'0') # add ne_to_z value for old versions
+                values.insert(50,'0') # add acc_range value for old versions
+            try:
+                triggers.loc[triggers.shape[0]] = values
+            except Exception as EX:
+                log.warning('{}\n{}'.format(line,EX))
+                continue
     except Exception as EX:
       log.warning('{}\n{}'.format(line,EX))
   origins['first'].replace(np.nan,0,inplace=True)
   triggers['loc'].replace('--','',inplace=True)  # fix stations location
+  triggers['tsmp'].replace('NA',0,inplace=True)  # fix for NA values
+  triggers['log_taup'].replace('NA',1e-60,inplace=True)  # fix for NA values
+  triggers['taup_snr'].replace('NA',0,inplace=True)  # fix for NA values
   try:
     for k,v in (zip(LOGEVENTHEADERLINE.split()[1:], LOGEVENTHEADERTYPE)):
       origins[k] = origins[k].astype(v)
@@ -204,6 +226,7 @@ def concatenateLOG(LOGs):
         continue
     origin = origin.iloc[0]  # convert list to object
     origins.loc[origin.name,'first']=1
+  log.debug('Reading LOG files Done')
   return origins, triggers
 
 
@@ -480,6 +503,7 @@ class AppForm(QMainWindow):
     self._blits = []
     self._drawing=False # are we in a canvas drawing phase?
     self._resizing=False # are we in a window resize phase?
+    self._redrawbg = False # are we in a background drawing pahse?
     self._origins = pd.DataFrame(columns=LOGEVENTHEADERLINE.split()[1:])  # origins table
     self._triggers = pd.DataFrame(columns=LOGTRIGGERHEADERLINE.split()[1:])  # triggers table
     self._refdict =  pd.DataFrame(columns=EVENTHEADERLINE.split()[1:])  # table of reference (catalog) events
@@ -551,7 +575,6 @@ class AppForm(QMainWindow):
     self.canvas.mpl_connect('button_press_event',self.on_click) # connect click on canvas
     self.canvas.mpl_connect('button_release_event',self.on_unclick) # connect mouse button release on canvas
     self.canvas.mpl_connect('axes_leave_event',self.on_ax_leave) # connect leave map area event on canvas
-    #self.canvas.mpl_connect('resize_event',self.resizeEvent) # connect resize event
     # connect eventWidget signals
     self.eventWidget.itemClicked.connect(self.on_event_dbclicked)
     self.eventWidget.itemDoubleClicked.connect(self.on_event_clicked)
@@ -583,19 +606,13 @@ class AppForm(QMainWindow):
     self.canvas.blit(self.ax.bbox)
 
   def showEvent(self,event):
-    self.resizeEvent(None)
+    self.redrawbgmap()
     self._background = self.canvas.copy_from_bbox(self.ax.bbox)
-
-  def resizeEvent(self,event):
-    '''called by any resize event of the map'''
-    if not self._resizing: # only run if we are not in a middle of a resizong process
-      self._resizing=True # note that we are resizong
-      self.redrawbgmap() # redraw the background map
-      self._resizing=False # Done with resizing.
-#    event.accept()
 
   def zoom(self,e):
     '''called by scroll_event to zoom in or out on map.'''
+    if self._redrawbg:
+      return
     ax = self.ax # easier
     x,y = e.xdata,e.ydata # get where to center to (mouse pointer)
     x0,x1 = ax.get_xlim() # get current x limits
@@ -603,6 +620,8 @@ class AppForm(QMainWindow):
     dx=(x1-x0)/2.0 # get distance from center to edge on x axis
     dy=(y1-y0)/2.0 # get distance from center to edge on y axis
     # zoom and center
+    self.statusBar().showMessage('hold, redrawing ...') # let user know to wait on drawing. it might take some time
+    self.blur.setEnabled(True)
     ax.set_xlim(x-dx*e.zoom,x+dx*e.zoom)
     ax.set_ylim(y-dy*e.zoom,y+dy*e.zoom)
     self.redrawbgmap() # redraw background map with new limits
@@ -617,6 +636,13 @@ class AppForm(QMainWindow):
     '''redraws the background map using open street map object (osm)
     see osm module for more details.
     '''
+    if not QApplication.mouseButtons() == Qt.NoButton: # or self._redrawbg:
+      print(int(QApplication.mouseButtons()))
+      return
+    if self._redrawbg:
+      print(':')
+      return
+    self._redrawbg = True
     self.statusBar().showMessage('hold, redrawing ...') # let user know to wait on drawing. it might take some time
     self.blur.setEnabled(True)
     QApplication.processEvents() # make sure user see the message
@@ -628,10 +654,11 @@ class AppForm(QMainWindow):
     tiles = self.osm.gettiles(x0,x1,y0,y1) # get the needed tiles from buffer or url. see osm module for more details
     self.osm.plottiles(tiles) # plot the tiles. see osm module for more details
     self.drawSignal.emit(True) # call self draw using a signal in case we are in a subprocess.
-    self.statusBar().showMessage('Done redrawing.',2000) # note user we are done with redrawing.
     self.blur.setEnabled(False)
     self.blur.update()
+    self.statusBar().showMessage('Done redrawing.',2000) # note user we are done with redrawing.
     QApplication.processEvents() # make sure user see the message
+    self._redrawbg = False
 
   def handle_home(self,evt):
     'handle mpl toolbar pan/zoom/back/forward/home buttons.'
